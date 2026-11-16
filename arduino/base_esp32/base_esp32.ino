@@ -90,7 +90,7 @@ void setup()
 
     // Give the serial connection a moment to start.
 
-    delay(1000);
+    delay(1000);   //in milisecons
 
 
     // Configure motor-driver pins and end-switch pins.
