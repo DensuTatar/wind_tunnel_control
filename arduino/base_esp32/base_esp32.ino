@@ -12,7 +12,6 @@
 // - Home the X and Z axes
 // - Move to requested X/Z coordinates
 // - Report the current position
-//
 // - Acquire sensor data through wired connections
 // - Read air-speed, pressure and temperature measurements
 // - Return sensor measurements to the PC
