@@ -16,6 +16,10 @@ import matplotlib.pyplot as plt
 SERIAL_PORT = "COM5"
 
 BAUD_RATE = 115200
+DEFAULT_TIMEOUT_S = 10
+HOME_TIMEOUT_S = 180
+MOVE_TIMEOUT_S = 90
+
 #baud rate is the serial communication speed
 #115200 basucally means 115200 bits/s
 #concerns communication between laptop->USB->ESP
@@ -108,36 +112,48 @@ def connect_to_esp32():
 # SEND COMMAND
 # ============================================================
 
-def send_command(
-    esp,
-    command
-):
 
-    message = (
-        command + "\n"
-    )
+def send_command(esp, command):
 
-    esp.write(
-        message.encode()
-    )
+    # Store the original timeout.
+    original_timeout = esp.timeout
 
-    response = (
-        esp.readline()
-        .decode()
-        .strip()
-    )
+    # Select a timeout based on the command.
+    if command == "HOME":
+        esp.timeout = HOME_TIMEOUT_S
 
-    if response == "":
-        raise TimeoutError(
-            f"No response to command: {command}"
+    elif command.startswith("MOVE,"):
+        esp.timeout = MOVE_TIMEOUT_S
+
+    else:
+        esp.timeout = DEFAULT_TIMEOUT_S
+
+    try:
+
+        message = command + "\n"
+
+        esp.write(message.encode())
+
+        response = (
+            esp.readline()
+            .decode()
+            .strip()
         )
 
-    if response.startswith("ERR"):
-        raise RuntimeError(
-            response
-        )
+        if response == "":
+            raise TimeoutError(
+                f"No response to command: {command}"
+            )
 
-    return response
+        if response.startswith("ERR"):
+            raise RuntimeError(response)
+
+        return response
+
+    finally:
+
+        # Restore the original timeout.
+        esp.timeout = original_timeout
 
 
 # ============================================================

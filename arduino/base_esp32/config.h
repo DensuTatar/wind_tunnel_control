@@ -11,6 +11,11 @@
 // - Travel limits
 // - Position calibration
 // - Movement speeds
+// - Sensor GPIO pins
+// - Voltage divider settings
+// - Demo/test mode
+// - Limit switch polarity
+
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -154,42 +159,32 @@ const float HOME_FINE_INCREMENT_MM = 0.25;
 const float DEFAULT_MOVE_SPEED_MM_S = 10.0;
 
 // ============================================================
-// ESP-NOW WIRELESS COMMUNICATION
+// SENSOR GPIO PINS
 // ============================================================
 
-// Both ESP32 devices must use the same Wi-Fi channel.
-
-const int ESPNOW_WIFI_CHANNEL = 1;
+const int AIR_SPEED_SENSOR_PIN = -1;
+const int PRESSURE_SENSOR_PIN = -1;
+const int TEMPERATURE_SENSOR_PIN = -1;
 
 
 // ============================================================
-// SENSOR ESP32-C3 MAC ADDRESS
+// VOLTAGE DIVIDER
 // ============================================================
-//
-// Replace these zeros with the real MAC address printed
-// by the ESP32-C3.
-//
-// Example:
-//
-// AA:BB:CC:DD:EE:FF
-//
-// becomes:
-//
-// {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
 
-const uint8_t SENSOR_ESP32C3_MAC[6] = {
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00
-};
+const float VOLTAGE_DIVIDER_RATIO = 5.0;
 
 
-// Maximum time the base ESP32 waits for a sensor response.
+// ============================================================
+// DEMO / TEST MODE
+// ============================================================
 
-const unsigned long SENSOR_RESPONSE_TIMEOUT_MS = 2000;
+const bool DEMO_SENSOR_MODE = false;
+
+// ============================================================
+// LIMIT SWITCH POLARITY
+// ============================================================
+
+const bool LIMIT_ACTIVE_LOW = true;
 
 
 #endif

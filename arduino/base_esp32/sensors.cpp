@@ -1,5 +1,5 @@
 // ============================================================
-// SENSOR READING - ESP32-C3
+// SENSOR READING - BASE ESP32
 // ============================================================
 //
 // This file contains the actual sensor-reading functions.

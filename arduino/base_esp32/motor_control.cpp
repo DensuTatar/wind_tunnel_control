@@ -985,22 +985,6 @@ bool CoreXZController::moveRelative(
 }
 
 
-    // --------------------------------------------------------
-    // UPDATE SOFTWARE POSITION
-    // --------------------------------------------------------
-    //
-    // For now, this assumes that the commanded movement
-    // completed successfully.
-    //
-    // Later we can improve this so interrupted moves caused
-    // by a limit switch do not incorrectly update the position.
-
-    _xPositionMM =
-        targetX;
-
-    _zPositionMM =
-        targetZ;
-}
 
 // ============================================================
 // ABSOLUTE X-Z MOVEMENT

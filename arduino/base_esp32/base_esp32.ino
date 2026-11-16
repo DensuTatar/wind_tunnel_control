@@ -13,8 +13,9 @@
 // - Move to requested X/Z coordinates
 // - Report the current position
 //
-// - Communicate wirelessly with the ESP32-C3 sensor node
-// - Request air-speed, pressure and temperature measurements
+// - Acquire sensor data through wired connections
+// - Read air-speed, pressure and temperature measurements
+// - Return sensor measurements to the PC
 //
 // Most of the actual motor-control logic is located in
 // motor_control.cpp.
@@ -23,8 +24,8 @@
 
 #include "config.h"
 #include "motor_control.h"
-#include "communication.h"
-#include <WiFi.h>
+#include "sensors.h"
+#include <math.h>
 
 // ============================================================
 // CORE XZ CONTROLLER
@@ -34,10 +35,53 @@
 
 CoreXZController gantry;
 
+// ============================================================
+// MOTION GPIO SAFETY CHECK
+// ============================================================
+
+// This function checks whether:
+//- All motion-related GPIO pins have been assigned.
+//- No two motion-related components have been assigned the same GPIO pin.
+static bool motionReady = false;
+
+static bool motionPinsConfigured()
+{
+    const int pins[] = {
+        MOTOR_A_STEP_PIN,
+        MOTOR_A_DIR_PIN,
+        MOTOR_B_STEP_PIN,
+        MOTOR_B_DIR_PIN,
+        X_MIN_LIMIT_PIN,
+        X_MAX_LIMIT_PIN,
+        Z_MIN_LIMIT_PIN,
+        Z_MAX_LIMIT_PIN
+    };
+
+    for (unsigned int i = 0;
+         i < sizeof(pins) / sizeof(pins[0]); i++)
+    {
+        if (pins[i] < 0)
+        {
+            return false;
+        }
+
+        for (unsigned int j = 0; j < i; j++)
+        {
+            if (pins[i] == pins[j])
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 
 // ============================================================
 // SETUP
 // ============================================================
+
 
 void setup()
 {
@@ -50,50 +94,35 @@ void setup()
     delay(1000);
 
 
-    // --------------------------------------------------------
-    // ESP-NOW SETUP
-    // --------------------------------------------------------
+    // Configure motor-driver pins and end-switch pins.
 
-    WiFi.mode(
-        WIFI_STA
-    );
+    motionReady = motionPinsConfigured();
 
-
-    // Print the base ESP32 MAC address.
-    //
-    // The ESP32-C3 needs this address in its config.h.
-
-    Serial.print(
-        "Base ESP32 MAC address: "
-    );
-
-    Serial.println(
-        WiFi.macAddress()
-    );
-
-
-    // Start wireless communication with the sensor ESP32-C3.
-
-    bool wirelessReady =
-    beginWirelessCommunication();
-    if (!wirelessReady)
+    if (motionReady)
+    {
+        gantry.begin();
+    }
+    else
     {
         Serial.println(
-            "WARN,Wireless sensor communication unavailable"
+            "WARN,Motion GPIOs not configured or duplicated"
         );
     }
 
 
-    // Configure motor-driver pins and end-switch pins.
+    // Check whether simulated sensor readings are enabled.
 
-    gantry.begin();
+    if (DEMO_SENSOR_MODE)
+    {
+        Serial.println(
+            "WARN,DEMO_SENSOR_MODE enabled; synthetic readings"
+        );
+    }
 
 
     // Tell the PC that the ESP32 firmware is running.
 
-    Serial.println(
-        "READY"
-    );
+    Serial.println("READY");
 }
 
 
@@ -267,29 +296,37 @@ void handleCommand(
     }
 
 
-    // --------------------------------------------------------
-    // HOME
-    // --------------------------------------------------------
 
-    else if (command == "HOME")
+
+    
+// --------------------------------------------------------
+// HOME
+// --------------------------------------------------------
+
+else if (command == "HOME")
+{
+    // Check whether the motion GPIO pins are configured.
+
+    if (!motionReady)
     {
-        gantry.home();
-
-
-        if (gantry.isHomed())
-        {
-            Serial.println(
-                "OK,HOME"
-            );
-        }
-
-        else
-        {
-            Serial.println(
-                "ERR,Homing failed"
-            );
-        }
+        Serial.println("ERR,Motion GPIOs not configured");
+        return;
     }
+
+    // Home the traverser.
+
+    gantry.home();
+
+    if (gantry.isHomed())
+    {
+        Serial.println("OK,HOME");
+    }
+    else
+    {
+        Serial.println("ERR,Homing failed");
+    }
+}
+
 
 
     // --------------------------------------------------------
@@ -306,19 +343,23 @@ void handleCommand(
     // MOVE
     // --------------------------------------------------------
 
-    else if (
-        command.startsWith("MOVE,")
-    )
+    
+    else if (command.startsWith("MOVE,"))
     {
-        handleMoveCommand(
-            command
-        );
-    }
+         if (!motionReady)
+         {
+        Serial.println("ERR,Motion GPIOs not configured");
+        return;
+         }
 
+    handleMoveCommand(command);
+    }
+    
 
 // --------------------------------------------------------
 // MEASURE
 // --------------------------------------------------------
+
 
 else if (command == "MEASURE")
 {
@@ -327,65 +368,53 @@ else if (command == "MEASURE")
     float temperature;
 
 
-    bool success =
-        requestSensorMeasurement(
-            speed,
-            pressure,
-            temperature
-        );
+    // Read sensors directly using the base ESP32.
+
+    readAll(
+        speed,
+        pressure,
+        temperature
+    );
 
 
-    if (!success)
+    // Check whether the measurements are valid.
+
+    if (!isfinite(speed) ||
+        !isfinite(pressure) ||
+        !isfinite(temperature))
     {
         Serial.println(
-            "ERR,Sensor measurement failed"
+            "ERR,Sensor measurement not available"
         );
 
         return;
     }
 
 
-    // Send the measurement to the PC using the same
-    // format expected by control.py.
+    // Send measurements to the PC.
 
-    Serial.print(
-        "OK,MEASURE,"
-    );
+    Serial.print("OK,MEASURE,");
 
-
-    Serial.print(
-        speed,
-        6
-    );
+    Serial.print(speed, 6);
 
     Serial.print(",");
 
-
-    Serial.print(
-        pressure,
-        6
-    );
+    Serial.print(pressure, 6);
 
     Serial.print(",");
 
-
-    Serial.println(
-        temperature,
-        6
-    );
+    Serial.println(temperature, 6);
 }
 
+// --------------------------------------------------------
+// UNKNOWN COMMAND
+// --------------------------------------------------------
 
-    // --------------------------------------------------------
-    // UNKNOWN COMMAND
-    // --------------------------------------------------------
+else
+{
+    Serial.println("ERR,Unknown command");
+}
 
-    else
-    {
-        Serial.println(
-            "ERR,Unknown command"
-        );
-    }
 }
 
 
@@ -397,20 +426,16 @@ void loop()
 {
     // Check whether the PC has sent a serial command.
 
-    if (
-        Serial.available() > 0
-    )
+    if (Serial.available() > 0)
     {
         // Read everything up to the newline character.
 
         String command =
             Serial.readStringUntil('\n');
 
-
         // Process the received command.
 
-        handleCommand(
-            command
-        );
+        handleCommand(command);
     }
 }
+
