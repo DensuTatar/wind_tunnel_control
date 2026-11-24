@@ -1,132 +1,116 @@
-"""FluidNC/Grbl-compatible serial adapter.
-
-This is an adapter to the known G-code approach, not a replacement for an
-uninspected copy of the project's original fluidnc_motion.py.
-Logical FluidNC X = physical traverser X; logical FluidNC Y = physical Z.
-CoreXY motor mixing must be configured and validated in FluidNC config.yaml.
+"""Stable motion API over the team's threaded FluidNC serial transport.
+UI positions are machine coordinates in mm, X = X, physical Z = FluidNC Y.
+No GPIO assignments or motor kinematics are performed on the PC.
 """
-import re
+import math
 import threading
 import time
-from .contracts import MachineStatus, Position
-
-_STATUS_RE = re.compile(r"^<([^|>]+)(?:\|([^>]*))?>$")
-_POS_RE = re.compile(r"(?:^|\|)(MPos|WPos):(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
+from .contracts import Position, MachineStatus
+from fluidnc_link import FluidNC, Status
 
 
-def parse_status(line: str) -> MachineStatus | None:
-    match = _STATUS_RE.match(line.strip())
-    if not match:
+def _machine_status(st):
+    p = st.mpos
+    pos = Position(p[0], p[1]) if p and len(p) >= 2 and all(map(math.isfinite, p[:2])) else None
+    return MachineStatus(st.state.split(':')[0], pos)
+
+
+def parse_status(line):
+    """Standalone parser for existing tests; no assumption that WPos is MPos."""
+    if not (line.startswith('<') and line.endswith('>')):
         return None
-    body = match.group(2) or ""
-    position = _POS_RE.search("|" + body)
-    pos = Position(float(position.group(2)), float(position.group(3))) if position else None
-    return MachineStatus(match.group(1).split(":")[0], pos)
+    state, *parts = line[1:-1].split('|')
+    fields = dict(p.split(':', 1) for p in parts if ':' in p)
+    mpos = tuple(map(float, fields['MPos'].split(','))) if 'MPos' in fields else None
+    if mpos is None and 'WPos' in fields and 'WCO' in fields:
+        mpos = tuple(a+b for a,b in zip(map(float, fields['WPos'].split(',')), map(float, fields['WCO'].split(','))))
+    return _machine_status(Status(state, mpos, None, line, fields))
 
 
 class FluidNCMotion:
-    def __init__(self, port: str, baud: int = 115200):
+    def __init__(self, port, baud=115200, link_factory=FluidNC):
         self.port, self.baud = port, baud
-        self.ser = None
+        self.link_factory = link_factory
+        self.link = None
         self.homed = False
-        self._write_lock = threading.Lock()
-        self._last_status = MachineStatus("Disconnected")
 
     def connect(self):
-        import serial
-        self.ser = serial.Serial(self.port, self.baud, timeout=0.2, write_timeout=1)
-        # Do not assume an already-homed machine after connecting.
-        time.sleep(0.35)
-        self._last_status = MachineStatus("Unknown")
+        self.link = self.link_factory(self.port, self.baud)
+        self.homed = False
 
     def disconnect(self):
-        if self.ser:
-            self.ser.close()
-            self.ser = None
         self.homed = False
-        self._last_status = MachineStatus("Disconnected")
+        if self.link:
+            self.link.close()
+            self.link = None
 
-    def _write(self, message: bytes):
-        if not self.ser or not self.ser.is_open:
-            raise RuntimeError("FluidNC serial port not connected")
-        with self._write_lock:
-            self.ser.write(message)
+    def get_status(self):
+        if not self.link:
+            raise RuntimeError('FluidNC not connected')
+        result = _machine_status(self.link.status(timeout=2))
+        fault = getattr(self.link, '_fault', None)
+        if fault and not (fault.startswith('ALARM') and result.state == 'Alarm'):
+            self.homed = False
+            raise RuntimeError(fault)
+        if result.state != 'Idle' and result.state not in ('Run', 'Home', 'Jog'):
+            self.homed = False
+        return result
 
-    def _read(self) -> str:
-        if not self.ser:
-            raise RuntimeError("FluidNC not connected")
-        return self.ser.readline().decode("utf-8", errors="replace").strip()
-
-    def _command(self, line: str, timeout_s: float = 8):
-        self._write((line + "\n").encode("ascii"))
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            msg = self._read()
-            if not msg:
-                continue
-            status = parse_status(msg)
-            if status:
-                self._last_status = status
-                continue
-            if msg.startswith("error:") or msg.startswith("ALARM:") or msg.startswith("[MSG:ERR"):
-                raise RuntimeError(f"FluidNC rejected {line!r}: {msg}")
-            if msg == "ok":
-                return
-        raise TimeoutError(f"No acknowledgment for FluidNC command {line!r}")
-
-    def get_status(self) -> MachineStatus:
-        self._write(b"?")  # Grbl real-time status request; no newline
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            msg = self._read()
-            parsed = parse_status(msg)
-            if parsed:
-                self._last_status = parsed
-                return parsed
-            if msg.startswith("ALARM:"):
-                self._last_status = MachineStatus("Alarm")
-                return self._last_status
-        raise TimeoutError("No FluidNC status response")
-
-    def _wait_idle(self, cancelled: threading.Event, timeout_s: float):
-        deadline = time.monotonic() + timeout_s
-        time.sleep(0.10)
+    def _wait_idle(self, cancelled, timeout, target=None):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancelled.is_set():
-                raise InterruptedError("Movement interrupted; homing state must be rechecked")
-            status = self.get_status()
-            if status.state in ("Alarm", "Door"):
-                self.homed = False
-                raise RuntimeError(f"FluidNC entered {status.state} state")
-            if status.state == "Idle":
-                return status
-            if status.state == "Hold":
-                raise InterruptedError("FluidNC is on hold")
-            time.sleep(0.15)
-        raise TimeoutError("FluidNC did not return to Idle")
+                raise InterruptedError('Movement cancelled')
+            st = self.get_status()
+            if st.state not in ('Idle', 'Run', 'Home', 'Jog'):
+                raise RuntimeError(f'Unexpected FluidNC state: {st.state}')
+            if st.state == 'Idle' and st.position is not None:
+                if target is None or max(abs(st.position.x_mm-target.x_mm), abs(st.position.z_mm-target.z_mm)) <= 0.05:
+                    return st.position
+            cancelled.wait(0.15)
+        raise TimeoutError('FluidNC did not report Idle at requested machine position')
 
-    def home(self, cancelled: threading.Event) -> Position:
+    def _failure(self):
         self.homed = False
-        self._command("$H", timeout_s=100)
-        state = self._wait_idle(cancelled, timeout_s=100)
-        self.homed = True
-        return state.position or Position(0, 0)
+        try:
+            self.link.feed_hold()
+        except Exception:
+            pass  # original exception is reported; physical stop is independent
 
-    def move_to(self, position: Position, feed_mm_min: float, cancelled: threading.Event) -> Position:
+    def home(self, cancelled: threading.Event):
+        self.homed = False
+        try:
+            if self.get_status().state not in ('Idle', 'Alarm'):
+                raise RuntimeError('Inspect machine state before homing')
+            self.link.home(timeout=600, cancelled=cancelled)
+            p = self._wait_idle(cancelled, 30)
+            if cancelled.is_set():
+                raise InterruptedError('Homing cancelled')
+            self.homed = True
+            return p
+        except Exception:
+            self._failure()
+            raise
+
+    def move_to(self, position, feed_mm_min, cancelled):
         if not self.homed:
-            raise RuntimeError("Home and validate the machine before movement")
-        state = self.get_status()
-        if state.state != "Idle":
-            raise RuntimeError(f"FluidNC not Idle: {state.state}")
-        self._command("G21")
-        self._command("G90")
-        # G-code Y is physical Z. Requires verified work coordinate origin.
-        self._command(f"G1 X{position.x_mm:.3f} Y{position.z_mm:.3f} F{feed_mm_min:.2f}")
-        end_state = self._wait_idle(cancelled, timeout_s=120)
-        # FluidNC can report machine or work coordinates; never infer target
-        # attainment without a verified coordinate offset.
-        return end_state.position or position
+            raise RuntimeError('Home and verify the machine first')
+        if not all(map(math.isfinite, (position.x_mm, position.z_mm, feed_mm_min))) or feed_mm_min <= 0:
+            raise ValueError('Invalid movement request')
+        try:
+            state = self.get_status()
+            if state.state != 'Idle' or state.position is None:
+                raise RuntimeError('Motion requires Idle and a known machine position (MPos or WPos+WCO)')
+            # Explicit mm, absolute, feed/min and machine coordinates; ignore inherited work offsets.
+            self.link.send('G21 G90 G94', cancelled=cancelled)
+            self.link.send(f'G53 G1 X{position.x_mm:.3f} Y{position.z_mm:.3f} F{feed_mm_min:.3f}', cancelled=cancelled)
+            distance = math.hypot(position.x_mm-state.position.x_mm, position.z_mm-state.position.z_mm)
+            return self._wait_idle(cancelled, max(30, distance/feed_mm_min*60*2+15), position)
+        except Exception:
+            self._failure()
+            raise
 
     def feed_hold(self):
-        if self.ser and self.ser.is_open:
-            self._write(b"!")  # Software feed hold, NOT an emergency stop.
+        self.homed = False
+        if self.link:
+            self.link.feed_hold()

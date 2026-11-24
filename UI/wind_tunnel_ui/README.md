@@ -1,83 +1,44 @@
-# Wind Tunnel Control — FluidNC (starter UI)
+# Wind Tunnel Control — merged FluidNC UI
 
-A modular PySide6 desktop application for the wind-tunnel Core-XZ traverser. **Simulation works with no hardware.** The hardware adapters are starter implementations based on the known project branch structure, not confirmed drop-in replacements for the team's exact files.
+The UI uses the group's `fluidnc_link.py` for USB serial motion, through the existing `backend/fluidnc_adapter.py`. The ESP32 already runs FluidNC with its hardware configuration. Do not flash it, upload the example YAML, or change GPIOs for this integration.
 
-## Installation (Windows / VS Code)
+## Start on Windows (VS Code / Anaconda)
 
-Open this folder in VS Code, open a terminal, and run:
+Open this `UI/wind_tunnel_ui` folder in VS Code, then in the terminal:
 
 ```powershell
-py -m venv .venv
-.venv\Scripts\activate
+conda activate windtunnel
 python -m pip install -r requirements.txt
 python main.py
 ```
 
-On macOS/Linux, activate with `source .venv/bin/activate` and use `python3` if necessary.
+Simulation is the startup default. Test Connect, Home, manual motion and a 2x2 scan first. No physical port is opened in simulation.
 
-## First run — safe simulation
+## One ESP32 — movement only
 
-1. Choose **Simulation** and click **Connect**.
-2. Click **HOME / reference**.
-3. Change target X/Z and click **Move to target**.
-4. Open **Automatic scan**. For a quick test, use 3 × 3 points, `Settle = 0.0 s`, `Samples/point = 1`. Click **START AUTOMATIC SCAN**.
-5. The CSV appears under `measurements/`, the graph under **Live results**.
+1. With machine safely supported and mains terminals covered, connect the FluidNC ESP32 via USB. Close Fluidterm, the CLI demo and any other serial program. Keep wind tunnel off during commissioning.
+2. Select **FluidNC movement only**, choose the FluidNC COM port and click Connect. The sensor port and Read sensor are disabled. Connecting is not a move.
+3. Click Refresh status. Inspect the existing FluidNC configuration before arming: `$CD` in a separate terminal session (close UI first). Verify working end switches, homing direction, allowed machine coordinates, speed, acceleration, mm reporting and independent physical stop. Do not bypass alarms or home without functioning switches. If no switches are installed, use supervised commissioning procedures outside this UI; the UI deliberately requires homing.
+4. Set `machine_settings.py` bounds to the actual verified **machine coordinate** range (original 0–400 mm values are NOT verified; some machines home to negative coordinates). Restart the UI if you edit the file. This does not affect ESP32 firmware. Verify both axis origins and motion signs physically. Tick the hardware checked box only after the checks.
+5. Click HOME / reference. The UI shows machine X and Y mapped to physical X and Z. Homing itself is a movement; clear the entire homing path first. If home is outside the PC bounds, the app refuses to mark it homed.
+6. Start with a small target from the reported home position, e.g. 5 mm in X with Z unchanged, if clearance allows. Feed defaults to 60 mm/min. Verify actual displacement with a ruler. Then test Z independently and a small diagonal. Use verified coordinates, not automatically the example values.
+7. Only after validating the above, choose a small 2x2 grid inside the verified travel area, then START MOVEMENT-ONLY GRID TEST. No sensor requests, fake velocity data, measurement CSVs or plots are generated.
+8. Software HOLD sends `!` and invalidates homing. It is NOT an emergency stop and cannot guarantee a stop during homing or a communications fault. Use the independent physical stop for emergencies, and support the vertical load against dropping. Inspect machine before reconnecting or homing again. Never assume a reset releases safely.
 
-## Proposed two-board hardware arrangement
+## Full experiment / future
 
-- **ESP32 #1:** FluidNC motion controller, connected as one USB serial port.
-- **ESP32-C3 #2:** sensor acquisition firmware, connected as a separate USB serial port.
-- PC/UI: two independent adapters, shared application controller.
+Choose **FluidNC + ESP32-C3** with two distinct USB ports. Sensor path is retained; the existing Arduino sensor sketch supports `MEASURE`, but real calibration, sensor demo mode and hardware have not been verified. No changes were made to the sensor firmware. Simulation still generates simulated data only in Simulation mode.
 
-The existing `fluidnc-experiment` branch discussed previously already uses **two wired ESP32 boards** in concept. If the implementation changes from one board to two, change the sensor/motion adapter(s), not the GUI.
+## Files and coordinate decisions
 
-### CRITICAL checks before enabling real movement
+- `gui.py`: same UI, explicit mode and grid-only operation; no raw G-code.
+- `backend/controller.py`: application workflow, motion-only scan, real sensor scan and simulation.
+- `backend/fluidnc_adapter.py`: retains the motion contract, calls shared threaded link; explicitly sends `G21 G90 G94` and `G53 G1 X... Y... F...` in machine coordinates as the branch's older CLI backend did. Does not assume WPos equals MPos. Checks Idle and reported target (0.05 mm software tolerance, not actual measured accuracy). No automatic origin/offset setting.
+- `fluidnc_link.py`: group serial library, with bounded write timeout, cancellable command waiting, serialized status requests and fault handling. Work-coordinate CLI commands explicitly set mm. UI and CLI must not access the same serial port simultaneously.
+- `patterns.py`, `demo.py`: group's independent expert test tool. CLI patterns use work coordinates, not the UI machine coordinate frame; do not interchange values unless offsets are known. CLI can send raw commands and unlock alarms; it does not have UI travel/homing guards. Do not use unlock to bypass a safety alarm. Use only under supervision. `python demo.py --list` lists ports without moving.
+- `machine_settings.py`: PC travel envelope and default feed. Not firmware settings.
+- Existing `fluidnc_experiment/` CLI and `arduino/` files remain intact as historical/alternate implementations. Do not upload the Arduino motion firmware to the FluidNC ESP32.
 
-The prior project branch used `fluidnc_motion.py`, `control_fluidnc.py`, `config.yaml.example`, and `sensor_esp32c3.ino` but those exact source files were **not available** while producing this UI. The adapter below assumes:
+## Verification and limitations
 
-- FluidNC can be reached at **115200 baud over USB serial**.
-- Logical FluidNC `X` is physical traverser X; **logical FluidNC `Y` is physical traverser Z**.
-- The correct CoreXY belt mixing, motor directions, homing inputs, units, travel limits and acceleration are correctly configured in the ESP32's `config.yaml`.
-- The machine is safely homed and its **G54 work-coordinate zero** corresponds to the intended 0–400 mm positive travel coordinates used by the UI. The 0–400 values are starting assumptions, **not verified machine limits**. They must be changed to your actual validated machine coordinates. FluidNC may report `MPos` or `WPos`, and these should not be conflated if offsets are nonzero.
-- The moving mechanics are safe to operate and a **separate hardware emergency stop** has been installed and tested. The software button sends a `!` feed hold, not an emergency stop.
-- The sensor ESP32-C3 responds to `MEASURE\n` with one of the formats listed in `backend/sensor_adapter.py` (unverified; must align with the real `.ino` code).
-
-**Do not test on hardware while the stepper vibration issue remains unresolved.** In real mode, you must explicitly tick the arming box to initiate homing or movement. Connecting alone never automatically moves the machine.
-
-## Code layers
-
-| Layer | File | Responsibility |
-| --- | --- | --- |
-| UI | `gui.py` | Widgets, actions, live data, plotting |
-| Application service | `backend/controller.py` | Coordinates movement and scanning, validation, CSV, events |
-| API | `backend/contracts.py` | Stable `Position`, `Measurement`, `ScanPlan` and adapter contracts |
-| Sim hardware | `backend/simulators.py` | Deterministic simulation |
-| FluidNC adapter | `backend/fluidnc_adapter.py` | `$H`, G-code, status `?`, feed hold `!` |
-| Sensor adapter | `backend/sensor_adapter.py` | Reads provisional ESP32-C3 measurement protocol |
-
-The UI **never imports** any of the FluidNC or sensor adapters directly. An architecture change happens in the adapters and `WindTunnelController.connect()` wiring; the event contract remains unchanged.
-
-## Integration with the existing branch
-
-Review your exact existing files, then decide whether to:
-
-1. Replace `backend/fluidnc_adapter.py` calls with your previously written `fluidnc_motion.py` library methods; or
-2. Keep this adapter and merge the validated command/safety logic from `fluidnc_motion.py`.
-
-Likewise, use the actual serial packet sent by `sensor_esp32c3.ino` and update only `backend/sensor_adapter.py`. If your team later sends sensor data through the motion ESP32 via ESP-NOW, you can write a *combined sensor adapter* while keeping the same `SensorPort.sample()` contract.
-
-## Notes / limitations
-
-- **No physical hardware has been tested or validated with these files.** The G-code parser and homing behavior may vary with FluidNC versions.
-- Software status (`Idle`) is not an independent position sensor. For open-loop stepper motors, missed steps cannot be detected by GUI alone.
-- Movement is considered complete when FluidNC returns `Idle`, but this is not proof of physical position or that the machine has no vibration. Validate coordinates against the actual machine, especially if work offsets are active.
-- An interrupted homing or move invalidates the app's homed flag; verify machine state before proceeding.
-- During a scan, CSV is written incrementally; if interrupted, partial CSV data is retained.
-- USB port names may change each time the ESP32 boards are reconnected.
-- This is an initial student research prototype, not a certified machine controller.
-
-## Tests
-
-```powershell
-python -m unittest discover -s tests -v
-```
+Run `python -m unittest discover -s tests -v`. Existing simulation tests and new fake-serial/movement-only tests exercise the Python backend. They do not certify machine motion, GPIO assignments, configuration, electrical compatibility, safety, or actual stepper behaviour. The GUI requires PySide6 and pyqtgraph; verify visually on the laptop. The current ESP32 configuration was not supplied and was not changed. The original positive travel bounds must be validated before use. Keep a backup of the actual ESP32 configuration separately.

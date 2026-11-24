@@ -2,6 +2,7 @@
 import queue
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from machine_settings import X_MIN, X_MAX, Z_MIN, Z_MAX, INITIAL_FEED
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -67,11 +68,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Wind Tunnel Control — FluidNC")
         self.resize(1150, 780)
         self.events = queue.Queue()
-        self.controller = WindTunnelController(self.enqueue, limits=MachineLimits(0, 400, 0, 400))
+        self.controller = WindTunnelController(self.enqueue, limits=MachineLimits(X_MIN, X_MAX, Z_MIN, Z_MAX))
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.busy = False
         self.connected = False
         self.homed = False
+        self.sensor_active = False
         self.velocities = []
         self.times = []
         self.measurements = 0
@@ -107,7 +109,7 @@ class MainWindow(QMainWindow):
         connection = QGroupBox("Connection and operating mode")
         controls = QGridLayout(connection)
         self.mode = QComboBox()
-        self.mode.addItems(["Simulation", "FluidNC + ESP32-C3"])
+        self.mode.addItems(["Simulation", "FluidNC movement only", "FluidNC + ESP32-C3"])
         self.mode.currentIndexChanged.connect(self.change_mode)
         controls.addWidget(QLabel("Backend"), 0, 0)
         controls.addWidget(self.mode, 0, 1)
@@ -123,7 +125,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.refresh, 0, 4)
         self.connect_btn = button("Connect", self.connect_backend)
         controls.addWidget(self.connect_btn, 1, 4)
-        self.arm = QCheckBox("Hardware checked: wiring, limits, motor directions and stop method verified")
+        self.arm = QCheckBox("Hardware checked: wiring, homing switches, machine limits and physical stop verified")
         self.arm.setStyleSheet("color: #fdba74;")
         controls.addWidget(self.arm, 1, 0, 1, 2)
         outer.addWidget(connection)
@@ -145,7 +147,7 @@ class MainWindow(QMainWindow):
     def make_motion_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        position = QGroupBox("Current position (reported / simulated)")
+        position = QGroupBox("Current machine position (reported / simulated)")
         row = QHBoxLayout(position)
         self.current_x = QLabel("— mm")
         self.current_z = QLabel("— mm")
@@ -159,9 +161,9 @@ class MainWindow(QMainWindow):
 
         box = QGroupBox("Manual movement — physical X and Z coordinates")
         form = QFormLayout(box)
-        self.target_x = spin(self.controller.limits.x_min, self.controller.limits.x_max, 100, 1, " mm")
-        self.target_z = spin(self.controller.limits.z_min, self.controller.limits.z_max, 200, 1, " mm")
-        self.feed = spin(1, 2000, 400, 0, " mm/min")
+        self.target_x = spin(self.controller.limits.x_min, self.controller.limits.x_max, self.controller.limits.x_min, 1, " mm")
+        self.target_z = spin(self.controller.limits.z_min, self.controller.limits.z_max, self.controller.limits.z_min, 1, " mm")
+        self.feed = spin(1, 2000, INITIAL_FEED, 0, " mm/min")
         form.addRow("Target X", self.target_x)
         form.addRow("Target Z", self.target_z)
         form.addRow("Feed rate", self.feed)
@@ -191,11 +193,11 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Scan grid (serpentine order)")
         grid = QGridLayout(box)
         self.x_start = spin(self.controller.limits.x_min, self.controller.limits.x_max, self.controller.limits.x_min, 1, " mm")
-        self.x_end = spin(self.controller.limits.x_min, self.controller.limits.x_max, self.controller.limits.x_max, 1, " mm")
+        self.x_end = spin(self.controller.limits.x_min, self.controller.limits.x_max, min(self.controller.limits.x_min+5, self.controller.limits.x_max), 1, " mm")
         self.z_start = spin(self.controller.limits.z_min, self.controller.limits.z_max, self.controller.limits.z_min, 1, " mm")
-        self.z_end = spin(self.controller.limits.z_min, self.controller.limits.z_max, self.controller.limits.z_max, 1, " mm")
-        self.nx = QSpinBox(); self.nx.setRange(2,51); self.nx.setValue(9)
-        self.nz = QSpinBox(); self.nz.setRange(2,51); self.nz.setValue(9)
+        self.z_end = spin(self.controller.limits.z_min, self.controller.limits.z_max, min(self.controller.limits.z_min+5, self.controller.limits.z_max), 1, " mm")
+        self.nx = QSpinBox(); self.nx.setRange(2,51); self.nx.setValue(2)
+        self.nz = QSpinBox(); self.nz.setRange(2,51); self.nz.setValue(2)
         self.settle = spin(0,120,2,1," s")
         self.samples = QSpinBox(); self.samples.setRange(1,100); self.samples.setValue(5)
         fields = [("X start", self.x_start), ("X end", self.x_end), ("Z start", self.z_start),
@@ -207,7 +209,7 @@ class MainWindow(QMainWindow):
             grid.addWidget(QLabel(label), row, col)
             grid.addWidget(entry, row, col+1)
         layout.addWidget(box)
-        self.point_count = QLabel("81 points")
+        self.point_count = QLabel("4 points")
         for ctrl in (self.nx, self.nz):
             ctrl.valueChanged.connect(lambda: self.point_count.setText(f"{self.nx.value()*self.nz.value()} points"))
         layout.addWidget(self.point_count)
@@ -265,10 +267,9 @@ class MainWindow(QMainWindow):
             return
         hardware = self.mode.currentText() != "Simulation"
         self.motion_port.setEnabled(hardware)
-        self.sensor_port.setEnabled(hardware)
+        self.sensor_port.setEnabled(self.mode.currentText() == "FluidNC + ESP32-C3")
         self.arm.setEnabled(hardware)
-        if not hardware:
-            self.arm.setChecked(False)
+        self.arm.setChecked(False)
         self.update_controls()
 
     def refresh_ports(self):
@@ -340,11 +341,15 @@ class MainWindow(QMainWindow):
         self.connect_btn.setEnabled(not self.busy)
         self.mode.setEnabled(not self.connected and not self.busy)
         self.motion_port.setEnabled(not self.connected and not self.busy and self.mode.currentText() != "Simulation")
-        self.sensor_port.setEnabled(not self.connected and not self.busy and self.mode.currentText() != "Simulation")
+        self.sensor_port.setEnabled(not self.connected and not self.busy and self.mode.currentText() == "FluidNC + ESP32-C3")
+        dry = self.mode.currentText() == "FluidNC movement only"
+        self.samples.setEnabled(not dry and not self.busy)
+        self.scan_btn.setText("START MOVEMENT-ONLY GRID TEST" if dry else "START AUTOMATIC SCAN")
+        self.arm.setEnabled(not self.busy and self.mode.currentText() != "Simulation")
         self.home_btn.setEnabled(available)
         self.move_btn.setEnabled(available and self.homed)
         self.scan_btn.setEnabled(available and self.homed)
-        self.measure_btn.setEnabled(available)
+        self.measure_btn.setEnabled(available and self.sensor_active)
         self.status_btn.setEnabled(available)
         self.hold_btn.setEnabled(self.connected)
 
@@ -357,12 +362,26 @@ class MainWindow(QMainWindow):
             if kind == "connected":
                 self.connected = True
                 self.homed = False
+                self.sensor_active = data["sensor"]
+                self.arm.setChecked(False)
+                self.current_x.setText("— mm")
+                self.current_z.setText("— mm")
+                self.speed_label.setText("— m/s")
+                self.pressure_label.setText("— Pa")
+                self.temp_label.setText("— °C")
+                self.measurements = 0
+                self.times.clear(); self.velocities.clear()
+                self.line.setData([], [])
+                self.table.setRowCount(0)
+                self.output.setText("Movement-only: no sensor data or CSV will be created." if not self.sensor_active else "Results saved under measurements/.")
                 self.status.setText("● CONNECTED  /  " + data["mode"])
                 self.status.setStyleSheet("color: #34d399; font-weight: 700;")
                 self.log("Connected to " + data["mode"] + (" (sensor active)" if data["sensor"] else " (no sensor)"))
             elif kind == "disconnected":
                 self.connected = False
                 self.homed = False
+                self.sensor_active = False
+                self.arm.setChecked(False)
                 self.status.setText("● DISCONNECTED")
                 self.status.setStyleSheet("color: #f59e0b; font-weight: 700;")
             elif kind == "position":
@@ -378,11 +397,14 @@ class MainWindow(QMainWindow):
             elif kind == "scan_finished":
                 self.output.setText(f"Saved {data['count']} points to {data['path']}")
                 self.log("Scan complete: " + data["path"])
+            elif kind == "dry_scan_finished":
+                self.output.setText(f"Completed {data['count']} movement-only points. No sensor data saved.")
+                self.log("Movement-only grid test complete.")
             elif kind == "measurement":
                 self.record_measurement(data["reading"], data["position"])
             elif kind == "machine_status":
                 self.log("FluidNC / simulator status: " + data.state)
-                if data.state in ("Alarm", "Hold", "Door"):
+                if not self.controller.homed:
                     self.homed = False
             elif kind == "error":
                 self.log("ERROR: " + str(data))
@@ -390,8 +412,7 @@ class MainWindow(QMainWindow):
                 self.status.setStyleSheet("color: #fca5a5; font-weight: 700;")
             elif kind == "task_done":
                 self.busy = False
-                if data == "Home" and self.controller.homed:
-                    self.homed = True
+                self.homed = bool(self.controller.homed)
                 self.update_controls()
             self.update_controls()
 

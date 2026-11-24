@@ -31,9 +31,13 @@ class WindTunnelController:
         if mode == "Simulation":
             motion = SimulatedMotion()
             sensor = SimulatedSensor(motion)
-        elif mode == "FluidNC + ESP32-C3":
+        elif mode in ("FluidNC movement only", "FluidNC + ESP32-C3"):
             if not motion_port.strip():
                 raise ValueError("Select the FluidNC serial port")
+            if mode == "FluidNC movement only":
+                sensor_port = ""
+            elif not sensor_port.strip():
+                raise ValueError("Select the sensor serial port, or choose FluidNC movement only")
             if sensor_port and sensor_port == motion_port:
                 raise ValueError("The motion and sensor USB ports must be different")
             motion = FluidNCMotion(motion_port)
@@ -74,6 +78,8 @@ class WindTunnelController:
         self.homed = False
         self.notify("activity", "Homing")
         p = self.motion.home(self.cancel)
+        self._check_cancel()
+        self.limits.validate(p)
         self.homed = True
         self.notify("position", p)
         self.notify("activity", "Ready")
@@ -91,6 +97,7 @@ class WindTunnelController:
         except Exception:
             self.homed = False
             raise
+        self._check_cancel()
         self.notify("position", actual)
         self.notify("activity", "Ready")
 
@@ -106,7 +113,9 @@ class WindTunnelController:
     def run_scan(self, plan: ScanPlan):
         self._require_homed()
         if not self.sensor:
-            raise RuntimeError("Connect the sensor ESP32-C3 before scanning")
+            if self.mode != "FluidNC movement only":
+                raise RuntimeError("Connect the sensor ESP32-C3 before scanning")
+            return self.run_dry_scan(plan)
         plan.validate(self.limits)
         self.cancel.clear()
         self.records = []
@@ -146,6 +155,29 @@ class WindTunnelController:
         finally:
             self.notify("activity", "Ready / inspect machine if stopped")
 
+    def run_dry_scan(self, plan: ScanPlan):
+        """Traverse the grid without sampling, creating CSVs or plotting data."""
+        self._require_homed()
+        plan.validate(self.limits)
+        self.cancel.clear()
+        self.records = []
+        total = plan.nx * plan.nz
+        self.notify("scan_progress", {"done": 0, "total": total})
+        self.notify("activity", "Movement-only grid test")
+        try:
+            for i, position in enumerate(plan.points(), 1):
+                self._check_cancel()
+                reported = self.motion.move_to(position, plan.feed_mm_min, self.cancel)
+                self.notify("position", reported)
+                self._sleep_interruptibly(plan.settle_s)
+                self._check_cancel()
+                self.notify("scan_progress", {"done": i, "total": total})
+            self.notify("dry_scan_finished", {"count": total})
+            self.notify("activity", "Ready")
+        except Exception:
+            self.homed = False
+            raise
+
     def request_hold(self):
         """Thread-safe, best-effort SOFTWARE hold; not an emergency stop."""
         self.cancel.set()
@@ -184,7 +216,7 @@ class WindTunnelController:
     def refresh_status(self):
         self._require_motion()
         status = self.motion.get_status()
-        if status.state in ("Alarm", "Hold", "Door"):
+        if status.state not in ("Idle", "Run", "Home", "Jog") or status.position is None:
             self.homed = False
         self.notify("machine_status", status)
         if status.position is not None:
