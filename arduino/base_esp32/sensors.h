@@ -10,7 +10,7 @@
 // ============================================================
 //
 // These functions provide a simple interface for reading
-// the sensors connected to the ESP32-C3.
+// the sensors connected to the ESP32.
 //
 // The actual reading and calibration logic is written
 // in sensors.cpp.

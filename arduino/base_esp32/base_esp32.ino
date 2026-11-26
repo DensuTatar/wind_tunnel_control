@@ -1,440 +1,70 @@
-// ============================================================
-// BASE ESP32 - WIND TUNNEL TRAVERSER
-// ============================================================
-//
-// This is the main program for the ESP32 mounted on the
-// stationary base plate.
-//
-// Main responsibilities:
-//
-// - Communicate with the PC through USB serial
-// - Control the CoreXZ traverser
-// - Home the X and Z axes
-// - Move to requested X/Z coordinates
-// - Report the current position
-// - Acquire sensor data through wired connections
-// - Read air-speed, pressure and temperature measurements
-// - Return sensor measurements to the PC
-//
-// Most of the actual motor-control logic is located in
-// motor_control.cpp.
-// ============================================================
-
-
-#include "config.h"
+#include <Arduino.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
 #include "motor_control.h"
 #include "sensors.h"
-#include <math.h>
 
-// ============================================================
-// CORE XZ CONTROLLER
-// ============================================================
+CoreXZController motion;
+char line[96];
+size_t used=0;
+bool overflow=false;
 
-// Create one controller object for the complete CoreXZ system.
-
-CoreXZController gantry;
-
-// ============================================================
-// MOTION GPIO SAFETY CHECK
-// ============================================================
-
-// This function checks whether:
-//- All motion-related GPIO pins have been assigned.
-//- No two motion-related components have been assigned the same GPIO pin.
-static bool motionReady = false;
-
-static bool motionPinsConfigured()
-{
-    const int pins[] = {
-        MOTOR_A_STEP_PIN,
-        MOTOR_A_DIR_PIN,
-        MOTOR_B_STEP_PIN,
-        MOTOR_B_DIR_PIN,
-        X_MIN_LIMIT_PIN,
-        X_MAX_LIMIT_PIN,
-        Z_MIN_LIMIT_PIN,
-        Z_MAX_LIMIT_PIN
-    };
-
-    for (unsigned int i = 0;
-         i < sizeof(pins) / sizeof(pins[0]); i++)
-    {
-        if (pins[i] < 0)
-        {
-            return false;
-        }
-
-        for (unsigned int j = 0; j < i; j++)
-        {
-            if (pins[i] == pins[j])
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-
-// ============================================================
-// SETUP
-// ============================================================
-
-
-void setup()
-{
-    // Start communication between the ESP32 and the PC.
-
+void setup() {
+    motion.begin();
     Serial.begin(115200);
-
-    // Give the serial connection a moment to start.
-
-    delay(1000);   //in milisecons
-
-
-    // Configure motor-driver pins and end-switch pins.
-
-    motionReady = motionPinsConfigured();
-
-    if (motionReady)
-    {
-        gantry.begin();
-    }
-    else
-    {
-        Serial.println(
-            "WARN,Motion GPIOs not configured or duplicated"
-        );
-    }
-
-
-    // Check whether simulated sensor readings are enabled.
-
-    if (DEMO_SENSOR_MODE)
-    {
-        Serial.println(
-            "WARN,DEMO_SENSOR_MODE enabled; synthetic readings"
-        );
-    }
-
-
-    // Tell the PC that the ESP32 firmware is running.
-
-    Serial.println("READY");
+    Serial.println("READY,WINDTUNNEL_CUSTOM_V2");
 }
-
-
-// ============================================================
-// POSITION RESPONSE
-// ============================================================
-
-void sendPosition()
-{
-    Serial.print("OK,POS,");
-
-    Serial.print(
-        gantry.getXPositionMM(),
-        3
-    );
-
-    Serial.print(",");
-
-    Serial.println(
-        gantry.getZPositionMM(),
-        3
-    );
+void position(const char* type) {
+    Serial.print("OK,"); Serial.print(type); Serial.print(',');
+    if (!motion.isHomed()) { Serial.println("NA,NA,UNHOMED"); return; }
+    Serial.print(motion.getXPositionMM(),4); Serial.print(',');
+    Serial.print(motion.getZPositionMM(),4); Serial.println(",HOMED");
 }
-
-
-// ============================================================
-// MOVE COMMAND
-// ============================================================
-
-void handleMoveCommand(
-    String command
-)
-{
-    // Expected command:
-    //
-    // MOVE,100,150
-    //
-    // means:
-    //
-    // X = 100 mm
-    // Z = 150 mm
-
-
-    // --------------------------------------------------------
-    // FIND COMMAS
-    // --------------------------------------------------------
-
-    int firstComma =
-        command.indexOf(',');
-
-    int secondComma =
-        command.indexOf(
-            ',',
-            firstComma + 1
-        );
-
-
-    // Check that both coordinates were supplied.
-
-    if (
-        firstComma < 0
-        || secondComma < 0
-    )
-    {
-        Serial.println(
-            "ERR,MOVE requires X and Z positions"
-        );
-
-        return;
-    }
-
-
-    // --------------------------------------------------------
-    // EXTRACT X AND Z VALUES
-    // --------------------------------------------------------
-
-    String xText =
-        command.substring(
-            firstComma + 1,
-            secondComma
-        );
-
-    String zText =
-        command.substring(
-            secondComma + 1
-        );
-
-
-    float targetX =
-        xText.toFloat();
-
-    float targetZ =
-        zText.toFloat();
-
-
-    // --------------------------------------------------------
-    // CHECK HOMING
-    // --------------------------------------------------------
-
-    if (!gantry.isHomed())
-    {
-        Serial.println(
-            "ERR,System must be homed before MOVE"
-        );
-
-        return;
-    }
-
-
-    // --------------------------------------------------------
-    // MOVE
-    // --------------------------------------------------------
-
-    bool movementCompleted =
-    gantry.moveTo(
-        targetX,
-        targetZ,
-        DEFAULT_MOVE_SPEED_MM_S
-    );
-
-
-if (!movementCompleted)
-{
-    Serial.println(
-        "ERR,Movement interrupted or invalid"
-    );
-
-    return;
+void error(const char* reason) { Serial.print("ERR,"); Serial.println(reason); }
+void value(float x) { if (isfinite(x)) Serial.print(x,6); else Serial.print("NA"); }
+bool number(const char* s,float& out) {
+    char* end; out=strtof(s,&end); return end!=s && *end=='\0' && isfinite(out);
 }
-
-Serial.print("OK,MOVE,");
-
-    Serial.print(
-        gantry.getXPositionMM(),
-        3
-    );
-
-    Serial.print(",");
-
-    Serial.println(
-        gantry.getZPositionMM(),
-        3
-    );
+void command(char* cmd) {
+    if (!strcmp(cmd,"PING")) Serial.println("OK,PONG,WINDTUNNEL_CUSTOM_V2");
+    else if (!strcmp(cmd,"MODE")) Serial.println(DEMO_SENSOR_MODE?"OK,MODE,DEMO":"OK,MODE,REAL");
+    else if (!strcmp(cmd,"CAPS")) {
+        Serial.print("OK,CAPS,"); Serial.print(MOTION_ENABLED?"ENABLED":"LOCKED");
+        Serial.print(','); Serial.print(X_MAX_MM,1); Serial.print(','); Serial.print(Z_MAX_MM,1);
+        Serial.print(','); Serial.println(MAX_FEED_MM_MIN,1);
+    } else if (!strcmp(cmd,"LIMITS")) {
+        Serial.print("OK,LIMITS,"); Serial.print(int(motion.xMinTriggered())); Serial.print(','); Serial.println(int(motion.zMinTriggered()));
+    } else if (!strcmp(cmd,"POS")) position("POS");
+    else if (!strcmp(cmd,"HOME")) {
+        if (motion.home()) position("HOME"); else error(motion.error());
+    } else if (!strncmp(cmd,"MOVE,",5)) {
+        char* x=cmd+5; char* z=strchr(x,',');
+        if (!z) { error("MOVE_FORMAT"); return; } *z++='\0';
+        char* f=strchr(z,','); if (f) *f++='\0';
+        float xv,zv,feed=DEFAULT_FEED_MM_MIN;
+        if (!number(x,xv)||!number(z,zv)||(f&&!number(f,feed))) { error("MOVE_FORMAT"); return; }
+        if (motion.moveTo(xv,zv,feed)) position("MOVE"); else error(motion.error());
+    } else if (!strcmp(cmd,"MEASURE")) {
+        float u,p,t; readAll(u,p,t);
+        // The UI can display demo values, but unavailable real readings are NA.
+        if (!isfinite(u)) { error("AIR_SPEED_NOT_IMPLEMENTED_OR_UNAVAILABLE"); return; }
+        Serial.print("OK,MEASURE,"); value(u); Serial.print(','); value(p); Serial.print(','); value(t); Serial.println();
+    } else if (!strcmp(cmd,"STOP")) { motion.stop(); Serial.println("OK,STOP"); }
+    else error("UNKNOWN_COMMAND");
 }
-
-
-// ============================================================
-// COMMAND PARSER
-// ============================================================
-
-void handleCommand(
-    String command
-)
-{
-    // Remove spaces and newline characters.
-
-    command.trim();
-
-
-    // --------------------------------------------------------
-    // PING
-    // --------------------------------------------------------
-    //
-    // Used by control.py to check that communication works.
-
-    if (command == "PING")
-    {
-        Serial.println(
-            "OK,PONG"
-        );
+void loop() {
+    while (Serial.available()) {
+        char c=char(Serial.read());
+        if (c=='!') { motion.stop(); used=0; overflow=false; continue; } // no unsolicited reply
+        if (c=='~'||c=='\r') continue;
+        if (c=='\n') {
+            if (overflow) error("COMMAND_TOO_LONG");
+            else if (used) { line[used]='\0'; used=0; command(line); }
+            used=0; overflow=false;
+        } else if (!overflow) {
+            if (used<sizeof(line)-1) line[used++]=c; else overflow=true;
+        }
     }
-
-
-
-
-    
-// --------------------------------------------------------
-// HOME
-// --------------------------------------------------------
-
-else if (command == "HOME")
-{
-    // Check whether the motion GPIO pins are configured.
-
-    if (!motionReady)
-    {
-        Serial.println("ERR,Motion GPIOs not configured");
-        return;
-    }
-
-    // Home the traverser.
-
-    gantry.home();
-
-    if (gantry.isHomed())
-    {
-        Serial.println("OK,HOME");
-    }
-    else
-    {
-        Serial.println("ERR,Homing failed");
-    }
+    delay(1);
 }
-
-
-
-    // --------------------------------------------------------
-    // POSITION
-    // --------------------------------------------------------
-
-    else if (command == "POS")
-    {
-        sendPosition();
-    }
-
-
-    // --------------------------------------------------------
-    // MOVE
-    // --------------------------------------------------------
-
-    
-    else if (command.startsWith("MOVE,"))
-    {
-         if (!motionReady)
-         {
-        Serial.println("ERR,Motion GPIOs not configured");
-        return;
-         }
-
-    handleMoveCommand(command);
-    }
-    
-
-// --------------------------------------------------------
-// MEASURE
-// --------------------------------------------------------
-
-
-else if (command == "MEASURE")
-{
-    float speed;
-    float pressure;
-    float temperature;
-
-
-    // Read sensors directly using the base ESP32.
-
-    readAll(
-        speed,
-        pressure,
-        temperature
-    );
-
-
-    // Check whether the measurements are valid.
-
-    if (!isfinite(speed) ||
-        !isfinite(pressure) ||
-        !isfinite(temperature))
-    {
-        Serial.println(
-            "ERR,Sensor measurement not available"
-        );
-
-        return;
-    }
-
-
-    // Send measurements to the PC.
-
-    Serial.print("OK,MEASURE,");
-
-    Serial.print(speed, 6);
-
-    Serial.print(",");
-
-    Serial.print(pressure, 6);
-
-    Serial.print(",");
-
-    Serial.println(temperature, 6);
-}
-
-// --------------------------------------------------------
-// UNKNOWN COMMAND
-// --------------------------------------------------------
-
-else
-{
-    Serial.println("ERR,Unknown command");
-}
-
-}
-
-
-// ============================================================
-// MAIN LOOP
-// ============================================================
-
-void loop()
-{
-    // Check whether the PC has sent a serial command.
-
-    if (Serial.available() > 0)
-    {
-        // Read everything up to the newline character.
-
-        String command =
-            Serial.readStringUntil('\n');
-
-        // Process the received command.
-
-        handleCommand(command);
-    }
-}
-

@@ -1,0 +1,92 @@
+name: "Windtunnel probe traverser"
+board: "ESP32 DevKit + 2x TB6600"
+
+# ---------------------------------------------------------------------------
+# Hardware assumptions (change these if your hardware differs):
+#  - 0.9 deg motors (400 full steps/rev), TB6600 set to 1/8 microstepping
+#    -> 3200 steps/rev; GT2 belt, 20-tooth pulley -> 40 mm/rev -> 80 steps/mm
+#  - TB6600 wired "common cathode": PUL-, DIR-, ENA- to ESP32 GND,
+#    ESP32 GPIOs drive PUL+, DIR+, ENA+ (signals active HIGH)
+#  - Vertical traverser: X = horizontal, Y = vertical (+Y = up)
+#  - Normally closed (NC) homing switches at the MIN end of X and Y (Y at the bottom),
+#    wired between the GPIO and GND, using the ESP32 internal pull-up
+#  - Travel of 300 x 300 mm is a PLACEHOLDER: measure and edit max_travel_mm
+# ---------------------------------------------------------------------------
+
+kinematics:
+  CoreXY:
+
+stepping:
+  engine: RMT
+  # 255 = never switch the motors off when idle (open loop: keep holding position)
+  idle_ms: 255
+  # TB6600 has slow optocoupler inputs: use generous pulse and direction timing
+  pulse_us: 10
+  dir_delay_us: 10
+  disable_delay_us: 5
+
+axes:
+  # ENA is left unconnected so the drivers are always enabled: the traverser
+  # is vertical (Y = up), and a disabled driver would let the carriage drop.
+  # To use ENA anyway, wire it to GPIO 25 and set: gpio.25
+  shared_stepper_disable_pin: NO_PIN
+
+  x:
+    steps_per_mm: 160.000
+    max_rate_mm_per_min: 3000.000
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 340.000
+    soft_limits: true
+    homing:
+      # CoreXY: X and Y must home in separate cycles (Y first, then X)
+      cycle: 2
+      positive_direction: false
+      mpos_mm: 0.000
+      seek_mm_per_min: 100.000
+      feed_mm_per_min: 50.000
+      settle_ms: 250
+      seek_scaler: 1.100
+      feed_scaler: 1.100
+    motor0:
+      # NC switch to GND + pull-up: pin reads HIGH when the switch is hit
+      # (or when a wire breaks, which is the safe failure)
+      limit_neg_pin: gpio.18:low:pu
+      limit_pos_pin: NO_PIN
+      limit_all_pin: NO_PIN
+      hard_limits: true
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.26
+        direction_pin: gpio.27:low
+        disable_pin: NO_PIN
+
+  y:
+    steps_per_mm: 160.000
+    max_rate_mm_per_min: 3000.000
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 300.000
+    soft_limits: true
+    homing:
+      cycle: 1
+      positive_direction: false
+      mpos_mm: 0.000
+      seek_mm_per_min: 100.000
+      feed_mm_per_min: 50.000
+      settle_ms: 250
+      seek_scaler: 1.100
+      feed_scaler: 1.100
+    motor0:
+      limit_neg_pin: gpio.19:low:pu
+      limit_pos_pin: NO_PIN
+      limit_all_pin: NO_PIN
+      hard_limits: true
+      pulloff_mm: 2.000
+      standard_stepper:
+        step_pin: gpio.32
+        direction_pin: gpio.33:low
+        disable_pin: NO_PIN
+
+start:
+  # Machine starts in alarm until homed ($H). Use $X to unlock for tests
+  # before the switches are wired.
+  must_home: true

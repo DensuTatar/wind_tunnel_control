@@ -1,190 +1,33 @@
-// This file contains settings specific to the ESP32
-// connected to the base plate.
-//
-// It contains:
-// - Motor A and Motor B pins
-// - End-switch pins
-// - Steps per revolution
-// - Microstepping
-// - Belt pitch
-// - Drive pulley teeth
-// - Travel limits
-// - Position calibration
-// - Movement speeds
-// - Sensor GPIO pins
-// - Voltage divider settings
-// - Demo/test mode
-// - Limit switch polarity
-
-
-#ifndef CONFIG_H
-#define CONFIG_H
-
-
-// ============================================================
-// MOTOR AND MOTION SETTINGS
-// ============================================================
-
-// NEMA 17 motor:
-// 0.9 degrees per full step
-// 360 / 0.9 = 400 full steps per revolution
-const int MOTOR_STEPS_PER_REV = 400;
-
-
-// Microstepping setting used on the motor driver.
-// IMPORTANT:
-// This value must later match the physical DIP-switch
-// setting on the motor driver.
-const int MICROSTEP = 8;
-
-
-// GT2 timing belt pitch
-const float BELT_PITCH_MM = 2.0;
-
-
-// ------------------------------------------------------------
-// DRIVE PULLEYS
-// ------------------------------------------------------------
-
-// Number of teeth on the toothed pulley attached
-// directly to the motor.
-//
-// Do NOT include the toothless idler/tensioner pulleys here.
-//
-// TODO:
-// Replace these numbers once the actual drive-pulley
-// tooth counts have been physically verified.
-const int MOTOR_A_DRIVE_PULLEY_TEETH = 20;
-const int MOTOR_B_DRIVE_PULLEY_TEETH = 20;
-
-
-// ------------------------------------------------------------
-// TRAVEL LIMITS
-// ------------------------------------------------------------
-
-// TODO:
-// Verify actual usable travel experimentally.
-const float X_MAX_MM = 400.0;
-const float Z_MAX_MM = 400.0;
-
-
-// ------------------------------------------------------------
-// POSITION CALIBRATION
-// ------------------------------------------------------------
-
-// Start at 1.0.
-// These values can later be adjusted after measuring
-// the actual travelled distance.
-const float X_POSITION_CALIBRATION = 1.0;
-const float Z_POSITION_CALIBRATION = 1.0;
-
-
-// ============================================================
-// MOTOR DIRECTION SETTINGS
-// ============================================================
-
-// These allow us to reverse a motor's direction in software
-// if the physical motor wiring/orientation causes the motor
-// to rotate opposite to the expected direction.
-//
-// These should be verified experimentally tho.
-
-const bool MOTOR_A_DIR_INVERT = false;
-const bool MOTOR_B_DIR_INVERT = false;
-
-
-
-// ============================================================
-// MOTOR GPIO PINS
-// ============================================================
-
-// Motor A
-const int MOTOR_A_STEP_PIN = -1;  // assign actual GPIO pin number
-const int MOTOR_A_DIR_PIN = -1;   // assign actual GPIO pin number
-
-// Motor B
-const int MOTOR_B_STEP_PIN = -1;  // assign actual GPIO pin number
-const int MOTOR_B_DIR_PIN = -1;   // assign actual GPIO pin number
-
-
-// ============================================================
-// LIMIT SWITCH GPIO PINS
-// ============================================================
-
-// Four physical end switches:
-//
-// X_MIN = left horizontal end
-// X_MAX = right horizontal end
-//
-// Z_MIN = bottom of left vertical rail
-// Z_MAX = top of left vertical rail
-
-
-// Physical X-axis limits
-const int X_MIN_LIMIT_PIN = -1;
-const int X_MAX_LIMIT_PIN = -1;
-
-// Physical Z-axis limits
-const int Z_MIN_LIMIT_PIN = -1;
-const int Z_MAX_LIMIT_PIN = -1;
-
-// ============================================================
-// HOMING SETTINGS
-// ============================================================
-
-// Faster speed used while searching for the home switch.
-const float HOME_FAST_SPEED_MM_S = 10.0;
-
-// Slower speed used for the final accurate approach.
-const float HOME_SLOW_SPEED_MM_S = 2.0;
-
-// Distance moved away from the switch before the
-// final slow approach.
-const float HOME_BACKOFF_MM = 3.0;
-
-// Size of each movement while searching for the switch.
-const float HOME_SEARCH_INCREMENT_MM = 1.0;
-
-// Smaller increment used during the final slow approach.
-const float HOME_FINE_INCREMENT_MM = 0.25;
-
-
-// ============================================================
-// MOVEMENT SPEED
-// ============================================================
-
-// Default carriage speed used for normal MOVE commands.
-// This is an initial value and should be verified experimentally.
-
-const float DEFAULT_MOVE_SPEED_MM_S = 10.0;
-
-// ============================================================
-// SENSOR GPIO PINS
-// ============================================================
-
-const int AIR_SPEED_SENSOR_PIN = -1;
-const int PRESSURE_SENSOR_PIN = -1;
-const int TEMPERATURE_SENSOR_PIN = -1;
-
-
-// ============================================================
-// VOLTAGE DIVIDER
-// ============================================================
-
-const float VOLTAGE_DIVIDER_RATIO = 5.0;
-
-
-// ============================================================
-// DEMO / TEST MODE
-// ============================================================
-
-const bool DEMO_SENSOR_MODE = false;
-
-// ============================================================
-// LIMIT SWITCH POLARITY
-// ============================================================
-
-const bool LIMIT_ACTIVE_LOW = true;
-
-
-#endif
+#pragma once
+// Hardware values based on the verified FluidNC config(3).yaml and measured travel.
+// This is CUSTOM firmware; none of the FluidNC code executes here.
+// Leave false for initial bench testing (PING, LIMITS, MODE, MEASURE).
+// Enable only after verifying DIR levels, driver wiring, switch states and physical stop.
+constexpr bool MOTION_ENABLED = false;
+constexpr int MOTOR_STEPS_PER_REV = 400;
+constexpr int MICROSTEP = 16; // inferred from measured 160 steps/mm; check driver DIP table
+constexpr float BELT_PITCH_MM = 2.0f;
+constexpr int DRIVE_PULLEY_TEETH = 20;
+constexpr float STEPS_PER_MM = MOTOR_STEPS_PER_REV * MICROSTEP / (BELT_PITCH_MM * DRIVE_PULLEY_TEETH);
+constexpr float X_MAX_MM = 340.0f, Z_MAX_MM = 300.0f;
+constexpr float X_POSITION_CALIBRATION = 1.0f, Z_POSITION_CALIBRATION = 1.0f;
+// Positive motor direction is LOW with these settings. Verify with drivers disconnected.
+constexpr bool MOTOR_A_DIR_INVERT = true, MOTOR_B_DIR_INVERT = true;
+constexpr int MOTOR_A_STEP_PIN = 26, MOTOR_A_DIR_PIN = 27;
+constexpr int MOTOR_B_STEP_PIN = 32, MOTOR_B_DIR_PIN = 33;
+constexpr int X_MIN_LIMIT_PIN = 18, Z_MIN_LIMIT_PIN = 19;
+constexpr int X_MAX_LIMIT_PIN = -1, Z_MAX_LIMIT_PIN = -1; // optional, not installed
+constexpr bool LIMIT_ACTIVE_LOW = true;
+constexpr float MAX_FEED_MM_MIN = 3000.0f;
+constexpr float DEFAULT_FEED_MM_MIN = 60.0f;
+constexpr float ACCELERATION_MM_S2 = 200.0f;
+constexpr float HOME_SEEK_MM_MIN = 500.0f, HOME_FEED_MM_MIN = 100.0f;
+constexpr float HOME_PULLOFF_MM = 2.0f;
+constexpr unsigned HOME_SETTLE_MS = 250;
+constexpr unsigned STEP_PULSE_US = 10, DIR_SETUP_US = 10;
+constexpr unsigned HEARTBEAT_TIMEOUT_MS = 2000; // host sends '~' while moving
+// No ENA toggling: drivers remain enabled/holding. Mechanically secure vertical load.
+// Real sensor GPIOs/calibration remain unassigned until verified electrically.
+constexpr int AIR_SPEED_SENSOR_PIN = -1, PRESSURE_SENSOR_PIN = -1, TEMPERATURE_SENSOR_PIN = -1;
+constexpr float VOLTAGE_DIVIDER_RATIO = 5.0f; // placeholder, NOT a wiring recommendation
+constexpr bool DEMO_SENSOR_MODE = false;
