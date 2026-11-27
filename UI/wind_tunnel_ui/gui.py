@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(box)
         self.target_x = spin(self.controller.limits.x_min, self.controller.limits.x_max, self.controller.limits.x_min, 1, " mm")
         self.target_z = spin(self.controller.limits.z_min, self.controller.limits.z_max, self.controller.limits.z_min, 1, " mm")
-        self.feed = spin(1, 2000, INITIAL_FEED, 0, " mm/min")
+        self.feed = spin(1, 12400, INITIAL_FEED, 0, " mm/min")
         form.addRow("Target X", self.target_x)
         form.addRow("Target Z", self.target_z)
         form.addRow("Feed rate", self.feed)

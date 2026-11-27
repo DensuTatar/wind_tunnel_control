@@ -88,7 +88,7 @@ class WindTunnelController:
         self._require_homed()
         p = Position(x_mm, z_mm)
         self.limits.validate(p)
-        if not (1 <= feed_mm_min <= 2000):
+        if not (1 <= feed_mm_min <= 12400):
             raise ValueError("Feed must be between 1 and 2000 mm/min")
         self.cancel.clear()
         self.notify("activity", "Moving")
